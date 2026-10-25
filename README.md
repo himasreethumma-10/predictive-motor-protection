@@ -432,15 +432,19 @@ summary reports WNS/TNS as **NA** because the design has **no user-specified
 timing constraints**; timing closure has therefore not been demonstrated.
 Vivado also warns that power estimation is inaccurate without a defined clock.
 
-Synthesis reported 16 warnings. Some report unused temporary registers
+The user subsequently reran the behavioral simulation, which printed
+`PASS: all motor protection testbench scenarios completed`; this run includes
+the thermal-state check that verifies a 500-count temperature reaches
+`thermal_state`. Synthesis has not yet been rerun after the thermal-state fix,
+so the resource and warning details below are from the prior source version.
+
+That earlier synthesis reported 16 warnings. Some report unused temporary registers
 (`prediction_temp` and `abs_jump`) that synthesis optimized away; the unused
 `delta_i` input on `risk_classifier` is redundant because the classifier uses
-`predicted_current`. The synthesis report also identified the thermal-state
-update gap; the RTL has since been corrected to store the temperature-aware
-candidate state and the testbench now checks that a 500-count temperature
-reaches `thermal_state`. Rerun simulation and synthesis on the updated source
-to confirm the correction. Successful synthesis, placement, and routing do
-not establish timing closure or hardware operation.
+`predicted_current`. The earlier synthesis report also identified the
+thermal-state update gap, which has since been fixed and simulation-tested.
+Successful synthesis, placement, and routing do not establish timing closure
+or hardware operation.
 
 ## File guide
 
