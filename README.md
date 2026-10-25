@@ -44,7 +44,7 @@ folder, not a reproduction of the paper.
 | Evidence | Reports circuit-level simulations and chip-design metrics for the proposed driver | Has RTL behavioral simulation; no board-level or physical-motor validation is established here |
 | Units | Paper reports physical electrical values for its design | RTL thresholds are ADC counts with no current/voltage/temperature calibration |
 
-> **┌─ What this project adds beyond the paper's reported protection features ─┐**
+> ** What this project adds beyond the paper's reported protection features **
 >
 > The project's **main enhancement is controlled recovery after a cleared
 > fault**:
@@ -71,7 +71,7 @@ folder, not a reproduction of the paper.
 > and recovery through the top-level design; run it in Vivado to verify the
 > complete sequence.
 >
-> **└─────────────────────────────────────────────────────────────────────────┘**
+> 
 
 The paper and this project address related safety goals at different layers.
 The paper describes a motor-driver IC and its current-sensing/gate-drive
