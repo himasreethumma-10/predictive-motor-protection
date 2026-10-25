@@ -38,9 +38,9 @@ folder, not a reproduction of the paper.
 |---|---|---|
 | Main goal | Design and simulate an integrated three-phase BLDC motor-driver chip | Prototype a digital FPGA-based motor monitoring and protection controller |
 | Overcurrent sensing | Per-bridge current sensing using an on-chip current-mirror approach and detection logic | Compares a filtered digital current value against programmable RTL thresholds |
-| Switching transients | Includes a short blanking interval in the overcurrent path to reduce false trips from switching spikes | Uses a four-sample moving average; it does not synchronize a blanking interval to PWM switching |
-| Drive functions | Integrates three-phase bridge/gate-drive support, charge-pump circuitry, Hall-signal decoding, PWM current control, and protection blocks | Generates one generic PWM output and a risk-selected duty; it does not implement three-phase commutation or gate-driver circuitry |
-| Response after overcurrent | Describes turning off the driver when overcurrent is detected; the paper does not describe an automatic restart/recovery sequence | Main enhancement: after cooldown, the RTL requires 8 consecutive clear/acceptable-risk clocks, then ramps PWM back toward the risk-based target; a persistent fault prevents recovery and more than 3 recovery attempts per reset causes lockout |
+| Switching transients | Includes a short blanking interval in the overcurrent path to reduce false trips from switching spikes | Uses a four-sample moving average; it does not synchronize a blanking [...] |
+| Drive functions | Integrates three-phase bridge/gate-drive support, charge-pump circuitry, Hall-signal decoding, PWM current control, and protection blocks | Generates one generic PWM output and a r[...] |
+| Response after overcurrent | Describes turning off the driver when overcurrent is detected; the paper does not describe an automatic restart/recovery sequence | Main enhancement: after cooldown, the[...] |
 | Evidence | Reports circuit-level simulations and chip-design metrics for the proposed driver | Has RTL behavioral simulation; no board-level or physical-motor validation is established here |
 | Units | Paper reports physical electrical values for its design | RTL thresholds are ADC counts with no current/voltage/temperature calibration |
 
@@ -71,7 +71,7 @@ folder, not a reproduction of the paper.
 > and recovery through the top-level design; run it in Vivado to verify the
 > complete sequence.
 >
-> 
+>
 
 The paper and this project address related safety goals at different layers.
 The paper describes a motor-driver IC and its current-sensing/gate-drive
@@ -361,6 +361,53 @@ FAULT_OFF instead of continuing the ramp.
 
 The default cooldown is 16 clock cycles. Its duration in seconds depends on
 the clock frequency. LOCKOUT is sticky and requires reset to leave it.
+
+### FSM state diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> STARTUP
+    STARTUP --> BIST
+
+    BIST --> LOCKOUT: bist_fail
+    BIST --> NORMAL: bist_done
+
+    NORMAL --> FAULT_OFF: fault
+    NORMAL --> WARNING: risk == WARNING
+    NORMAL --> PWM_REDUCE: risk == DANGER
+    NORMAL --> CRITICAL: risk == CRITICAL
+    NORMAL --> FAULT_OFF: risk == FAULT
+
+    WARNING --> FAULT_OFF: fault
+    WARNING --> NORMAL: risk == SAFE
+    WARNING --> PWM_REDUCE: risk == DANGER
+    WARNING --> CRITICAL: risk == CRITICAL or FAULT
+
+    PWM_REDUCE --> FAULT_OFF: fault
+    PWM_REDUCE --> MONITOR: risk == SAFE
+    PWM_REDUCE --> WARNING: risk == WARNING
+    PWM_REDUCE --> CRITICAL: risk == CRITICAL or FAULT
+
+    MONITOR --> FAULT_OFF: fault
+    MONITOR --> RECOVERY: risk == SAFE
+    MONITOR --> CRITICAL: risk >= CRITICAL
+
+    CRITICAL --> FAULT_OFF
+
+    FAULT_OFF --> COOLDOWN
+
+    COOLDOWN --> LOCKOUT: bist_fail
+    COOLDOWN --> SELF_CHECK: cooldown_done
+
+    SELF_CHECK --> LOCKOUT: fault or bist_fail or risk > WARNING
+    SELF_CHECK --> RECOVERY: clear for 8 cycles and recovery_attempt_count < 3
+    SELF_CHECK --> LOCKOUT: recovery_attempt_count >= 3
+
+    RECOVERY --> FAULT_OFF: fault or risk >= CRITICAL
+    RECOVERY --> NORMAL: risk <= WARNING and recovery_complete
+
+    LOCKOUT --> LOCKOUT
+```
 
 ### Built-in self-test (BIST)
 
