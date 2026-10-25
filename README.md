@@ -2,7 +2,7 @@
 
 ## What this project is
 
-This project is an FPGA-oriented prototype of a motor monitoring and protection
+This project is a simulation of a motor monitoring and protection
 controller. It reads digitized current, voltage, and temperature values, looks
 for risky conditions, and adjusts or disables a PWM output. It also records a
 fault code and basic fault statistics.
