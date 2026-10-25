@@ -409,6 +409,73 @@ stateDiagram-v2
     LOCKOUT --> LOCKOUT
 ```
 
+### Simplified FSM overview
+
+```mermaid
+flowchart TD
+    START([STARTUP]) --> BIST[BIST]
+    BIST --> NORMAL[NORMAL]
+    NORMAL -->|fault| FAULT_OFF[FAULT_OFF]
+    NORMAL -->|warning| WARNING[WARNING]
+    NORMAL -->|danger| PWM_REDUCE[PWM_REDUCE]
+    NORMAL -->|critical| CRITICAL[CRITICAL]
+    WARNING -->|safe| NORMAL
+    WARNING -->|danger| PWM_REDUCE
+    PWM_REDUCE -->|safe| MONITOR[MONITOR]
+    MONITOR -->|safe| RECOVERY[RECOVERY]
+    FAULT_OFF --> COOLDOWN[COOLDOWN]
+    COOLDOWN --> SELF_CHECK[SELF_CHECK]
+    SELF_CHECK -->|clear + attempts left| RECOVERY
+    SELF_CHECK -->|unsafe / exhausted| LOCKOUT[LOCKOUT]
+    RECOVERY -->|fault or critical| FAULT_OFF
+    RECOVERY -->|complete| NORMAL
+    LOCKOUT --> LOCKOUT
+```
+
+### Recovery timing view
+
+```mermaid
+sequenceDiagram
+    participant Sensor
+    participant FSM
+    participant PWM
+
+    Sensor->>FSM: fault detected
+    FSM->>PWM: disable output
+    FSM->>FSM: FAULT_OFF
+    FSM->>FSM: COOLDOWN (16 cycles)
+    FSM->>FSM: SELF_CHECK (8 clear cycles)
+
+    alt fault cleared and attempts remain
+        FSM->>PWM: start recovery ramp
+        loop duty increase every clock
+            PWM-->>FSM: duty step +10
+        end
+        PWM-->>FSM: recovery_complete
+        FSM->>FSM: NORMAL
+    else fault persists or lockout condition
+        FSM->>PWM: keep output disabled
+        FSM->>FSM: LOCKOUT
+    end
+```
+
+### FSM state encoding table
+
+| State value | State name | RTL constant |
+|---:|---|---|
+| 0 | STARTUP | `ST_STARTUP` |
+| 1 | BIST | `ST_BIST` |
+| 2 | NORMAL | `ST_NORMAL` |
+| 3 | WARNING | `ST_WARNING` |
+| 4 | PWM_REDUCE | `ST_PWM_REDUCE` |
+| 5 | MONITOR | `ST_MONITOR` |
+| 6 | CRITICAL | `ST_CRITICAL` |
+| 7 | FAULT_OFF | `ST_FAULT_OFF` |
+| 8 | COOLDOWN | `ST_COOLDOWN` |
+| 9 | SELF_CHECK | `ST_SELF_CHECK` |
+| 10 | RECOVERY | `ST_RECOVERY` |
+| 11 | LOCKOUT | `ST_LOCKOUT` |
+
 ### Built-in self-test (BIST)
 
 The BIST controller defaults to 4 cycles. It checks `sensor_valid` during its
