@@ -1,3 +1,4 @@
+// Selects a risk-based duty and ramps up gradually during recovery.
 module adaptive_pwm #(
     parameter SAFE_DUTY     = 10'd800,
     parameter WARNING_DUTY  = 10'd650,
@@ -22,8 +23,8 @@ module adaptive_pwm #(
 
     reg [9:0] target_duty;
 
+    // A default value is assigned before the case so every path is defined.
     always @(*) begin
-        // FIX: Guaranteed explicit initial baseline evaluation value to safely prevent latches
         target_duty = 10'd0;
 
         case (risk_level)
@@ -46,6 +47,7 @@ module adaptive_pwm #(
             pwm_duty <= 10'd0;
         end
         else if (recovery_active) begin
+            // Step toward the target without overshooting it.
             if (pwm_duty < target_duty)
                 pwm_duty <= pwm_duty + 10'd10;
             else
@@ -56,6 +58,7 @@ module adaptive_pwm #(
         end
     end
 
+    // The FSM can leave recovery only after the selected target is reached.
     assign recovery_complete = (pwm_duty >= target_duty);
 
 endmodule

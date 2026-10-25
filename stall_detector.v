@@ -1,3 +1,4 @@
+// Detects high current with low commanded duty and a non-rising current trend.
 module stall_detector #(
     parameter CURRENT_LIMIT = 12'd2400,
     parameter LOW_PWM_LIMIT = 10'd300,
@@ -14,12 +15,14 @@ module stall_detector #(
 
     wire stall_condition;
 
+    // All three observations must be true in the same cycle.
     assign stall_condition =
         (current_in >= CURRENT_LIMIT) &&
         (pwm_duty <= LOW_PWM_LIMIT) &&
         (delta_i <= 0);
 
-always @(posedge clk or posedge reset) begin
+    // Require the condition to persist for STALL_COUNT_LIMIT cycles.
+    always @(posedge clk or posedge reset) begin
         if (reset) begin
             stall_count <= 8'd0;
             stall_fault <= 1'b0;

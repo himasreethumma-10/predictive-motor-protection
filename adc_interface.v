@@ -1,3 +1,4 @@
+// Registers the already-digitized sensor inputs on each clock edge.
 module adc_interface (
     input        clk,
     input        reset,
@@ -12,19 +13,19 @@ module adc_interface (
     output reg        sensor_valid
 );
 
-  always @(posedge clk or posedge reset) begin
-
+    // The asynchronous reset gives the rest of the design known startup values.
+    always @(posedge clk or posedge reset) begin
         if (reset) begin
-            current_sample   <= 12'd0;
-            voltage_sample   <= 12'd0;
+            current_sample     <= 12'd0;
+            voltage_sample     <= 12'd0;
             temperature_sample <= 12'd0;
-            sensor_valid     <= 1'b0;
+            sensor_valid       <= 1'b0;
         end
         else begin
-            current_sample   <= current_raw;
-            voltage_sample   <= voltage_raw;
+            current_sample     <= current_raw;
+            voltage_sample     <= voltage_raw;
             temperature_sample <= temperature_raw;
-            sensor_valid     <= sensor_valid_raw;
+            sensor_valid       <= sensor_valid_raw;
         end
     end
 

@@ -1,3 +1,4 @@
+// Checks sensor validity and flags readings that appear stuck or implausible.
 module sensor_diagnostics #(
     parameter JUMP_LIMIT = 12'd1500,
     parameter BAD_COUNT_LIMIT = 8'd16
@@ -15,8 +16,8 @@ module sensor_diagnostics #(
     reg [7:0] max_count;
     reg [12:0] abs_jump;
 
-   always @(posedge clk or posedge reset) begin
-
+    // Consecutive-value counters clear as soon as their condition disappears.
+    always @(posedge clk or posedge reset) begin
         if (reset) begin
             previous_current <= 12'd0;
             zero_count <= 8'd0;
@@ -51,11 +52,15 @@ module sensor_diagnostics #(
                 max_count <= 8'd0;
             end
 
+            // Unsigned subtraction in the larger register gives the magnitude
+            // of the change regardless of which sample is larger.
             if (current_in >= previous_current)
                 abs_jump = current_in - previous_current;
             else
                 abs_jump = previous_current - current_in;
 
+            // Invalid validity is an immediate trip; stuck/jump checks are
+            // combined into the same diagnostic output.
             if ((!sensor_valid) ||
                 (invalid_count >= BAD_COUNT_LIMIT-1) ||
                 (zero_count >= BAD_COUNT_LIMIT-1) ||

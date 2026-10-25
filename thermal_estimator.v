@@ -1,3 +1,4 @@
+// Maintains a simple count-based thermal estimate and threshold flag.
 module thermal_estimator #(
     parameter THERMAL_LIMIT = 12'd3000,
     parameter HEAT_STEP = 12'd8,
@@ -13,6 +14,8 @@ module thermal_estimator #(
 
     reg [11:0] next_thermal;
 
+    // Calculate the next state combinationally: heat from high current or
+    // cool toward zero, then do not let the estimate fall below measurement.
     always @(*) begin
         if (current_in > 12'd1200) begin
             if (thermal_state <= 12'd4087)
@@ -31,6 +34,7 @@ module thermal_estimator #(
             next_thermal = temperature_in;
     end
 
+    // Store the candidate estimate; reset starts the model at zero.
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             thermal_state <= 12'd0;
@@ -40,6 +44,7 @@ module thermal_estimator #(
         end
     end
 
+    // The raw temperature check trips immediately, without waiting for a clock.
     always @(*) begin
         thermal_fault = (thermal_state >= THERMAL_LIMIT) ||
                         (temperature_in >= THERMAL_LIMIT);

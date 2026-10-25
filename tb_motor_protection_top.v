@@ -1,5 +1,6 @@
 `timescale 1ns/1ps
 
+// End-to-end behavioral checks for startup, faults, recovery, and lockout.
 module tb_motor_protection_top;
 
     localparam ST_NORMAL  = 4'd2;
@@ -61,6 +62,7 @@ module tb_motor_protection_top;
 
     always #5 clk = ~clk;
 
+    // Apply reset long enough to initialize both synchronous and async logic.
     task apply_reset;
         begin
             reset = 1'b1;
@@ -70,6 +72,7 @@ module tb_motor_protection_top;
         end
     endtask
 
+    // Fail with a useful message instead of hanging if a state is never reached.
     task wait_for_state;
         input [3:0] expected_state;
         input integer max_cycles;
@@ -119,6 +122,7 @@ module tb_motor_protection_top;
         end
     endtask
 
+    // Reusable sensor ramp that drives the complete filtering/fault path.
     task trigger_overcurrent;
         begin
             set_current_and_wait(12'd1000, 12);
@@ -132,6 +136,7 @@ module tb_motor_protection_top;
         end
     endtask
 
+    // Confirm recovery is gradual and ends at the SAFE duty target.
     task recover_to_normal;
         begin
             current_raw = 12'd100;
@@ -160,6 +165,7 @@ module tb_motor_protection_top;
         temperature_raw = 12'd500;
         sensor_valid_raw = 1'b1;
 
+        // Test 1: startup and safe operating point, including thermal input.
         $display("Test 1: startup, successful BIST, and safe motor operation");
         apply_reset();
         wait_for_state(ST_NORMAL, 20);
@@ -172,6 +178,7 @@ module tb_motor_protection_top;
             $fatal(1, "Expected thermal state to include measured temperature 500, got %0d",
                    thermal_state);
 
+        // Test 2: emergency trip, persistent-fault lockout, and fault logging.
         $display("Test 2: rising current triggers an overcurrent fault");
         trigger_overcurrent();
         if (filtered_current < 12'd3600)
@@ -192,6 +199,7 @@ module tb_motor_protection_top;
         if (last_fault_code !== 4'd2)
             $fatal(1, "Expected fault logger code 2, got %0d", last_fault_code);
 
+        // Test 3: a cleared fault qualifies before PWM recovery begins.
         $display("Test 3: cleared overcurrent completes cooldown and recovery ramp");
         current_raw = 12'd100;
         sensor_valid_raw = 1'b1;
@@ -207,6 +215,7 @@ module tb_motor_protection_top;
             $fatal(1, "Recovery started before the 8-cycle clear qualification completed");
         recover_to_normal();
 
+        // Test 4: enforce the configured three-attempt recovery limit.
         $display("Test 4: repeated trips are limited to three recovery attempts");
         repeat (2) begin
             trigger_overcurrent();
@@ -218,6 +227,7 @@ module tb_motor_protection_top;
         if (pwm_out !== 1'b0 || pwm_duty !== 10'd0)
             $fatal(1, "Expected PWM shutdown after recovery-attempt limit");
 
+        // Test 5: sensor loss during operation shuts down and locks out.
         $display("Test 5: invalid sensor causes fault, shutdown, and lockout");
         current_raw = 12'd100;
         sensor_valid_raw = 1'b1;
@@ -235,6 +245,7 @@ module tb_motor_protection_top;
         if (last_fault_code !== 4'd1)
             $fatal(1, "Expected fault logger code 1, got %0d", last_fault_code);
 
+        // Test 6: invalid sensor during startup fails BIST.
         $display("Test 6: failed startup BIST enters lockout");
         current_raw = 12'd100;
         sensor_valid_raw = 1'b0;

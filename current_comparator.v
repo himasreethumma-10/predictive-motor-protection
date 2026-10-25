@@ -1,3 +1,4 @@
+// Produces cumulative threshold flags from the filtered current count.
 module current_comparator #(
     parameter WARNING_LIMIT  = 12'd1800,
     parameter DANGER_LIMIT   = 12'd2400,
@@ -11,6 +12,7 @@ module current_comparator #(
     output reg emergency_fault
 );
 
+    // Higher thresholds also satisfy each lower threshold.
     always @(*) begin
         warning = (current_in >= WARNING_LIMIT);
         danger = (current_in >= DANGER_LIMIT);

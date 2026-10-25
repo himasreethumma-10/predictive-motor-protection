@@ -1,3 +1,4 @@
+// Projects current forward by a configurable number of sample intervals.
 module risk_predictor #(
     parameter PREDICTION_HORIZON = 3
 ) (
@@ -8,6 +9,7 @@ module risk_predictor #(
     output reg [11:0] predicted_current
 );
 
+    // Extra signed width holds current plus the scaled positive or negative trend.
     reg signed [16:0] prediction_temp;
 
     always @(posedge clk or posedge reset) begin
@@ -16,6 +18,7 @@ module risk_predictor #(
             prediction_temp <= 17'sd0;
         end
         else begin
+            // Clamp the prediction so it remains a valid 12-bit sensor count.
             prediction_temp =
                 $signed({1'b0,current_in}) +
                 (delta_i * PREDICTION_HORIZON);

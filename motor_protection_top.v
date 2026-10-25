@@ -1,3 +1,4 @@
+// Top-level wiring for the simulated motor-protection controller.
 module motor_protection_top (
     input clk,
     input reset,
@@ -26,6 +27,7 @@ module motor_protection_top (
     output persistent_fault
 );
 
+    // Registered sensor values and internal control signals.
     wire [11:0] current_sample;
     wire [11:0] voltage_sample;
     wire [11:0] temperature_sample;
@@ -247,6 +249,7 @@ module motor_protection_top (
         .pwm_out(pwm_generated)
     );
 
+    // Gate the PWM command off immediately for a fault or disabled FSM state.
     assign pwm_out = pwm_generated && motor_enable && !fault;
 
     // -----------------------------------------

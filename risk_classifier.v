@@ -1,5 +1,4 @@
-// Predictive 5-level risk classifier
-// Verilog-2001 compatible
+// Verilog-2001 compatible classifier for SAFE through FAULT risk levels.
 module risk_classifier #(
     parameter WARNING_LIMIT  = 12'd1800,
     parameter DANGER_LIMIT   = 12'd2400,
@@ -8,6 +7,7 @@ module risk_classifier #(
 ) (
     input [11:0] current_in,
     input [11:0] predicted_current,
+    // Kept in the interface for integration; prediction already uses this trend.
     input signed [12:0] delta_i,
     output reg [2:0] risk_level
 );
@@ -21,13 +21,13 @@ module risk_classifier #(
     reg [11:0] effective_current;
 
     always @(*) begin
-        // Use the larger of present and predicted current so that
-        // a rising trend can increase risk before the hard threshold.
+        // Compare present and projected counts; use the highest matching band.
         if (predicted_current > current_in)
             effective_current = predicted_current;
         else
             effective_current = current_in;
 
+        // Check the most severe band first, then work down to SAFE.
         if (current_in >= FAULT_LIMIT || predicted_current >= FAULT_LIMIT)
             risk_level = FAULT;
         else if (current_in >= CRITICAL_LIMIT || predicted_current >= CRITICAL_LIMIT)

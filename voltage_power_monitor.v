@@ -1,3 +1,4 @@
+// Checks voltage bounds and reports the raw-count voltage-current product.
 module voltage_power_monitor #(
     parameter VOLTAGE_LOW  = 12'd1000,
     parameter VOLTAGE_HIGH = 12'd4000
@@ -9,6 +10,7 @@ module voltage_power_monitor #(
 );
 
     always @(*) begin
+        // This product is an estimate in digital counts, not calibrated watts.
         power_estimate = voltage_in * current_in;
         voltage_fault = (voltage_in < VOLTAGE_LOW) ||
                         (voltage_in > VOLTAGE_HIGH);

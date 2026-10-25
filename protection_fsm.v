@@ -1,3 +1,4 @@
+// Controls startup, normal operation, shutdown, qualified recovery, and lockout.
 module protection_fsm #(
     parameter COOLDOWN_CYCLES = 16,
     parameter CLEAR_QUALIFY_CYCLES = 8,
@@ -43,6 +44,7 @@ module protection_fsm #(
     reg [7:0] recovery_attempt_count;
     reg cooldown_done;
 
+    // State and timing counters are updated together on the rising clock edge.
     always @(posedge clk or posedge reset) begin
         if (reset) begin
             state                  <= ST_STARTUP;
@@ -54,6 +56,7 @@ module protection_fsm #(
         else begin
             state <= next_state;
 
+            // Count cooldown clocks while the FSM is entering or in cooldown.
             if (next_state == ST_COOLDOWN) begin
                 if (cooldown_count < COOLDOWN_CYCLES - 1) begin
                     cooldown_count <= cooldown_count + 1'b1;
@@ -67,6 +70,7 @@ module protection_fsm #(
                 cooldown_done  <= 1'b0;
             end
 
+            // Any interruption restarts the consecutive-clear qualification.
             if ((state == ST_SELF_CHECK) && !fault && !bist_fail &&
                 (risk_level <= WARNING)) begin
                 if (clear_qualify_count < CLEAR_QUALIFY_CYCLES)
@@ -76,11 +80,13 @@ module protection_fsm #(
                 clear_qualify_count <= 8'd0;
             end
 
+            // Count attempts when recovery is entered, not on every recovery clock.
             if ((state == ST_SELF_CHECK) && (next_state == ST_RECOVERY))
                 recovery_attempt_count <= recovery_attempt_count + 1'b1;
         end
     end
 
+    // Combinational next-state logic describes every allowed transition.
     always @(*) begin
         next_state = state;
 
@@ -156,6 +162,7 @@ module protection_fsm #(
             end
 
             ST_SELF_CHECK: begin
+                // Unsafe or unstable conditions lock out; eligible clears recover.
                 if (fault || bist_fail || (risk_level > WARNING))
                     next_state = ST_LOCKOUT;
                 else if (clear_qualify_count >= CLEAR_QUALIFY_CYCLES - 1) begin
@@ -183,7 +190,7 @@ module protection_fsm #(
         endcase
     end
 
-    // Outputs Execution
+    // Decode state into motor-enable, recovery, and lockout control outputs.
     always @(*) begin
         motor_enable    = 1'b0;
         recovery_active = 1'b0;
