@@ -6,6 +6,8 @@ module fault_classifier (
     input sensor_fault,
     input stall_fault,
     input persistent_fault,
+    input fast_trip_fault,
+    input inverse_time_fault,
 
     output reg fault,
     output reg [3:0] fault_code
@@ -20,7 +22,7 @@ module fault_classifier (
             fault      = 1'b1;
             fault_code = 4'd1;
         end
-        else if (emergency_current_fault) begin
+        else if (fast_trip_fault || inverse_time_fault || emergency_current_fault) begin
             fault      = 1'b1;
             fault_code = 4'd2;
         end
