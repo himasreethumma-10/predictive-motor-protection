@@ -29,6 +29,7 @@ module motor_protection_top (
 
     // Registered sensor values and internal control signals.
     wire [11:0] current_sample;
+    wire [11:0] current_deglitched;
     wire [11:0] voltage_sample;
     wire [11:0] temperature_sample;
     wire sensor_valid;
@@ -37,6 +38,8 @@ module motor_protection_top (
     wire danger_current;
     wire critical_current;
     wire emergency_current_fault;
+    wire fast_trip_fault;
+    wire inverse_time_fault;
 
     wire voltage_fault;
     wire thermal_fault;
@@ -71,12 +74,43 @@ module motor_protection_top (
     );
 
     // -----------------------------------------
+    // Sensor deglitching / spike qualification
+    // -----------------------------------------
+    current_deglitcher U_DEGLITCH (
+        .clk(clk),
+        .reset(reset),
+        .current_in(current_sample),
+        .deglitched_current(current_deglitched),
+        .deglitch_fault()
+    );
+
+    // -----------------------------------------
+    // Fast trip path to reduce detection latency.
+    // -----------------------------------------
+    fast_trip_detector U_FAST_TRIP (
+        .clk(clk),
+        .reset(reset),
+        .current_in(current_sample),
+        .fast_trip_fault(fast_trip_fault)
+    );
+
+    // -----------------------------------------
+    // Inverse-time overload protection
+    // -----------------------------------------
+    inverse_time_protection U_INVERSE_TIME (
+        .clk(clk),
+        .reset(reset),
+        .current_in(current_deglitched),
+        .inverse_time_fault(inverse_time_fault)
+    );
+
+    // -----------------------------------------
     // Current filter
     // -----------------------------------------
     current_filter U_FILTER (
         .clk(clk),
         .reset(reset),
-        .current_in(current_sample),
+        .current_in(current_deglitched),
         .filtered_current(filtered_current)
     );
 
@@ -193,6 +227,8 @@ module motor_protection_top (
         .sensor_fault(sensor_fault),
         .stall_fault(stall_fault),
         .persistent_fault(persistent_fault),
+        .fast_trip_fault(fast_trip_fault),
+        .inverse_time_fault(inverse_time_fault),
         .fault(fault),
         .fault_code(fault_code)
     );
