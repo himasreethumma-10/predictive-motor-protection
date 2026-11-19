@@ -1,493 +1,115 @@
 # Predictive Motor Protection System
 
-## What this project is
+## Overview
 
-This project implements a digital motor monitoring and protection controller
-on an FPGA. It reads digitized current, voltage, and temperature values, looks
-for risky conditions, and adjusts or disables a PWM output. It also records a
-fault code and basic fault statistics.
+This project implements a digital motor-monitoring and protection controller in FPGA RTL. It samples digitized current, voltage, and temperature values, evaluates current risk and other fault conditions, adjusts or disables a PWM command, and records fault statistics. It also includes a fast-trip path and an inverse-time overload accumulator.
 
-The main idea is to respond to a problem before it becomes worse:
+The sensor inputs are already digital values. This repository does **not** implement an ADC conversion interface, motor power stage, physical-unit conversion, or a certified safety system. `pwm_out` is a logical command signal, not proof that power to a physical motor is disconnected. Motor-connected use requires a suitable gate-driver shutdown path and independent hardware overcurrent protection.
 
-1. Sample sensor values.
-2. Smooth the current reading and estimate its short-term trend.
-3. Classify the present/predicted current risk and check other fault conditions.
-4. Select a PWM duty cycle or turn the drive command off.
-5. Log faults and, for eligible faults, require a stable clear period before a
-   limited number of cooldown-and-recovery attempts.
+The checked-in Vivado project identifies Vivado 2023.2 and FPGA part `xc7a100tcsg324-1`. The project team reports Nexys 4 DDR board bring-up, but no XDC constraints are checked in, so the pin assignments, clock definition, and I/O standards for that bring-up are not captured here.
 
-This is an FPGA implementation of digital RTL, not a complete motor-drive
-product. The sensor inputs are already digital values; there is no ADC
-conversion interface, motor power stage, physical-unit conversion, or safety
-certification in this project.
+## Protection features
 
-The FPGA implementation has been brought up on a Digilent Nexys 4 DDR board,
-as reported by the project team and shown in the shared board photo. The
-checked-in Vivado project identifies Vivado 2023.2 and target part
-`xc7a100tcsg324-1`, but does not include an XDC constraints file. The pin
-assignments, clock definition, and electrical I/O standards used for the board
-bring-up are therefore not captured in this repository.
+- Four-sample moving-average current filtering, trend calculation, and three-sample-ahead risk prediction.
+- Current threshold classification and adaptive PWM duty.
+- **Fast trip:** compares raw sampled current against a high threshold, bypassing the moving average, with a short qualification counter.
+- **Inverse-time overload protection:** accumulates a digital overload value while current is elevated and slowly decays it below the warning threshold.
+- Current deglitching on the normal filtered-current path.
+- Voltage-range, temperature/thermal, persistence, stall, and sensor diagnostics.
+- Fault classification, logging, cooldown, qualified recovery, and lockout.
 
-## Comparison with the supplied paper
+All thresholds are digital counts, not amperes, volts, or degrees. Their use with a real motor requires sensor calibration and engineering validation.
 
-The supplied reference is A. Aib, D. E. Khodja, S. Chakroune, and H. Rahali,
-“Fuzzy current analysis-based fault diagnostic of induction motor using
-hardware co-simulation with field programmable gate array,”
-*Electrical Engineering & Electromechanics*, 2023, no. 6, pp. 3–9,
-[doi:10.20998/2074-272X.2023.6.01](https://doi.org/10.20998/2074-272X.2023.6.01).
-The paper studies fuzzy-logic diagnosis of phase unbalance and a missing phase
-using stator-current RMS as the fault indicator, validated with hardware
-co-simulation on a Xilinx ML402 board with a Virtex-4 FPGA and MATLAB/Simulink
-System Generator.
+## Current protection paths
 
-| Topic | Supplied paper | This project |
-|---|---|---|
-| Main goal | Diagnose induction-motor phase-unbalance and missing-phase faults | Provide digital motor-risk supervision, PWM-command control, and fault handling |
-| Current analysis | Uses stator-current RMS as the input fault indicator for fuzzy logic | Averages four samples of one digital current channel, predicts a short-term trend, and applies count thresholds; it does not calculate RMS |
-| Diagnostic method | Fuzzy-logic fault-detection architecture | Fixed threshold/risk logic and sensor diagnostics; no fuzzy inference |
-| Fault coverage | Phase unbalance and missing phase | Generic overcurrent, voltage/thermal, stall, persistence, and sensor faults; no per-phase imbalance or missing-phase diagnosis |
-| FPGA implementation | ML402 board with Xilinx Virtex-4, co-simulated through MATLAB/Simulink System Generator | RTL project targeting `xc7a100tcsg324-1`; Nexys 4 DDR board bring-up is reported, but board constraints and motor-connected validation are not documented here |
-| Drive behavior | The paper focuses on fault diagnosis, not the recovery controller implemented here | One generic PWM command with risk-based duty and cooldown/recovery/lockout |
-
-**Conclusion:** the project does not reproduce or currently match the paper's
-diagnostic method or fault coverage. The overlap is at a broad level: both use
-FPGA technology and motor-current information for motor-condition monitoring.
-The project is a distinct supervisory protection design, not an implementation
-of the paper's fuzzy RMS-based phase-fault diagnosis.
-
-> **Project behavior distinct from the paper**
->
-> The project's main enhancement is controlled recovery after a cleared
-> fault:
->
-> 1. Detect overcurrent and force the PWM command low.
-> 2. Keep the motor disabled during cooldown.
-> 3. Require the fault to be clear and risk no higher than WARNING for 8
->    consecutive clock cycles; a continuing fault prevents restart.
-> 4. Allow at most 3 recovery attempts after reset; a further trip locks out
->    until reset.
-> 5. Ramp PWM upward in 10-count steps until the current risk level's duty
->    target is reached.
-> 6. Return to normal control after the ramp; if risk becomes critical or a
->    fault returns, shut down again.
->
-> Other implemented features include predictive current risk, sensor
-> diagnostics, voltage/temperature checks, stall/persistence detection, and
-> fault logging.
->
-> These are different goals and features, not evidence that the paper's
-> diagnostic method has been implemented. The testbench exercises selected
-> RTL behaviors, including overcurrent detection, fault clearance, cooldown,
-> and recovery; it does not validate the paper's fuzzy diagnosis or physical
-> motor behavior.
-
-### Work needed to match the paper's method
-
-The following are proposed additions, not implemented features:
-
-1. Acquire and process separate stator-current measurements for the motor
-   phases, then calculate the RMS indicator used by the paper.
-2. Implement and verify the paper's fuzzy-logic inference for phase unbalance
-   and missing-phase faults; the existing thresholds do not provide this
-   diagnosis.
-3. Define and document the sensor interface, FPGA pin/clock constraints, and
-   the hardware co-simulation setup needed to validate the algorithm against
-   reference MATLAB/Simulink results.
-4. Test with suitable phase-current signals and a motor/drive setup. A generic
-   PWM output and the reported board bring-up alone do not establish phase
-   fault diagnosis or physical-motor validation.
-
-## Design at a glance
+The top-level current signal splits into separate paths. The fast-trip detector uses the sampled current directly; the deglitcher feeds inverse-time protection and the normal moving-average/filter path.
 
 ```text
-current_raw ──> ADC input register ──> 4-sample current average ──┬─> current limits
-                                                                  ├─> trend/prediction
-                                                                  ├─> stall/persistence checks
-                                                                  └─> power/thermal checks
-voltage_raw ──> ADC input register ──────────────────────────────────> voltage/power check
-temperature_raw ──> ADC input register ──────────────────────────────> thermal fault check
-sensor_valid_raw ──> ADC input register ────────────────────────────> diagnostics/BIST
-
-fault checks + risk ──> fault classifier + protection state machine
-                      ├─> adaptive PWM duty ──> PWM output
-                      └─> fault logger
+current_raw -> input register -> current_sample -> fast-trip detector -----+
+                                             |                             |
+                                             +-> deglitcher -> inverse-time +-> fault classifier
+                                                        |                    |
+                                                        +-> 4-sample filter -+-> risk and other checks
 ```
 
-The top-level module is `motor_protection_top`. Its external inputs are
-`clk`, active-high `reset`, three 12-bit sensor values, and
-`sensor_valid_raw`. Its outputs include the PWM signal and duty, risk and fault
-codes, FSM state, and diagnostic values such as filtered current, predicted
-current, thermal state, and logged fault data.
+### Fast trip
 
-At the top-level output, `pwm_out` is forced low whenever a classified `fault`
-is active or the FSM has disabled the motor. This is a **logical PWM-command
-shutdown**, not proof that a physical motor's power is disconnected: a real
-system needs an appropriate gate-driver enable/shutdown connection and
-independent hardware overcurrent protection.
+`fast_trip_detector` defaults to a threshold of **3500 counts** and a qualification count of **2 clock cycles**. It compares `current_sample` directly, rather than waiting for the four-sample current average to settle. The fault is asserted after the qualification count is met and clears when the sampled current falls below the threshold. This is a low-latency digital path, but it is not instantaneous protection or a substitute for hardware overcurrent protection.
 
-### Recovery sequence at a glance
+### Inverse-time overload
 
-The central idea is: **trip off first, then only restart after the fault is
-gone, cooldown has completed, and PWM has ramped to its target.**
+`inverse_time_protection` defaults to a warning threshold of **1800 counts** and an accumulator trip limit of **2000**. On each clock, when its deglitched current input is at or above the warning threshold, it adds `(current >> 4) + 1` to a 16-bit accumulator, saturating at 65535. Below the threshold, the accumulator decays by 2 counts per clock until it reaches zero. The fault output asserts when the accumulator reaches the configured trip limit.
 
-```mermaid
-flowchart TD
-    A["Monitor current and other fault inputs"] --> B{"Fault active?"}
-    B -- "No" --> C["Normal / risk-based PWM"]
-    C --> A
-    B -- "Yes" --> D["PWM command forced LOW"]
-    D --> E["FAULT_OFF"]
-    E --> F["COOLDOWN - 16 clock cycles"]
-    F --> I["SELF_CHECK"]
-    I --> J{"Fault clear, risk SAFE/WARNING for 8 clocks, fewer than 3 attempts?"}
-    J -- "No" --> H["LOCKOUT - motor remains disabled"]
-    J -- "Yes" --> K["RECOVERY - controlled PWM ramp"]
-    K --> L{"Fault returns or risk is CRITICAL/FAULT?"}
-    L -- "Yes" --> D
-    L -- "No; ramp not complete" --> K
-    L -- "No; ramp complete" --> C
-```
+This means larger current counts build the accumulator faster, while lower current lets it decay. It is a simple RTL overload accumulator—not a calibrated inverse-time relay curve, IEC curve, or validated motor thermal model. Its timing depends on the clock frequency and current waveform.
 
-During recovery, duty increases by **10 counts per clock** toward the
-risk-based target (the default SAFE target is **800 counts**). If a fault
-returns or risk becomes critical, the design shuts down again. It allows at
-most **3 automatic recovery ramps after reset**; a further trip leads to
-LOCKOUT. A fault that remains active, or risk above WARNING, during
-SELF_CHECK leads to LOCKOUT; otherwise those conditions must stay clear for
-8 consecutive clock cycles. This is a digital qualification interval, not a
-physical safety guarantee.
-This diagram shows the RTL's control behavior; `pwm_out` is a command signal,
-not a physical power disconnect.
+### Current deglitcher
 
-All thresholds below are **digital input counts**, unless stated otherwise.
-The RTL does not define what one count means in amperes, volts, or degrees.
-Those conversions and the real motor's safe limits must be established for the
-actual sensors and motor before motor-connected use.
+`current_deglitcher` defaults to a jump limit of **1000 counts** and a glitch qualification setting of **2**. A sample whose absolute difference from the preceding raw sample exceeds the jump limit is held out of the deglitched output for that cycle. The deglitcher also produces `deglitch_fault` after repeated qualifying jumps, but the top-level currently leaves that output unconnected; it is not independently reported as a fault. The fast-trip path intentionally bypasses deglitching, so a sufficiently high raw sampled current can still trip promptly.
 
-## Conditions and thresholds in the RTL
+## Current thresholds and risk
 
-### Current limits and risk levels
+The default thresholds in `current_comparator` and `risk_classifier` are:
 
-The default thresholds in both `current_comparator` and `risk_classifier` are:
-
-| Threshold | Default count | Meaning |
+| Threshold | Count | Meaning |
 |---|---:|---|
 | Warning | 1800 | Warning and above |
 | Danger | 2400 | Danger and above |
 | Critical | 3000 | Critical and above |
-| Emergency/fault | 3600 | Emergency current fault / fault risk |
+| Emergency current | 3600 | Emergency-current fault / FAULT risk |
 
-The current comparator checks the **filtered current** and asserts each output
-when the value is greater than or equal to its threshold. Therefore the
-warning, danger, and critical outputs are cumulative: for example, a value of
-3100 also satisfies warning and danger.
+The comparator uses filtered current and its threshold flags are cumulative. The risk classifier uses filtered and predicted current, selecting the highest applicable level:
 
-The risk classifier compares both filtered current and predicted current. It
-chooses the highest applicable level:
-
-| Risk output | Encoded value | Condition |
+| Risk | Encoded value | Condition |
 |---|---:|---|
-| SAFE | 0 | Current and prediction are below 1800 |
-| WARNING | 1 | Either is at least 1800 but neither is at least 2400 |
-| DANGER | 2 | Either is at least 2400 but neither is at least 3000 |
-| CRITICAL | 3 | Either is at least 3000 but neither is at least 3600 |
+| SAFE | 0 | Both current and prediction below 1800 |
+| WARNING | 1 | Either is at least 1800, neither is at least 2400 |
+| DANGER | 2 | Either is at least 2400, neither is at least 3000 |
+| CRITICAL | 3 | Either is at least 3000, neither is at least 3600 |
 | FAULT | 4 | Either is at least 3600 |
 
-`risk_predictor` estimates:
+The predictor estimates `predicted_current = current + (delta_i × 3)`, clamps the result to 0–4095, and uses a horizon of three samples. `delta_i` is a change in digital counts per sample, not per second.
 
-```text
-predicted_current = current + (current change per sample × 3)
-```
+## Other default checks
 
-The default prediction horizon is 3. Results are clamped to the range 0–4095.
-The `delta_i` signal is the difference between the latest and previous
-filtered-current values, in digital counts per sample (not counts per second).
-`risk_classifier` has a `delta_i` input but does not use it directly; the
-predictor uses it to calculate predicted current.
-
-### Sensor diagnostics
-
-`sensor_diagnostics` uses these defaults:
-
-| Check | Default condition |
+| Check | Default behavior |
 |---|---|
-| Invalid sensor | `sensor_valid` is low; this asserts `sensor_fault` immediately |
-| Invalid-sample counter | Counts up to 16 consecutive invalid samples |
-| Stuck-at-zero reading | Current is exactly 0 for 16 consecutive samples |
-| Stuck-at-maximum reading | Current is exactly 4095 for 16 consecutive samples |
-| Implausible jump | Absolute change from the previous current sample is greater than 1500 |
+| Sensor diagnostics | Invalid sensor input faults immediately; also checks stuck-at-zero/max readings and large jumps |
+| Voltage | Fault below 1000 or above 4000 counts; the range endpoints are inclusive |
+| Thermal | Fault at thermal state or measured temperature of 3000 counts or more |
+| Thermal estimate | Adds 8 counts per clock when filtered current exceeds 1200; otherwise cools by 2 counts per clock; measured temperature is incorporated as a floor |
+| Persistent overload | Danger/critical comparator condition sustained for 8 clocks |
+| Stall | Filtered current >= 2400, PWM duty <= 300, and non-rising current for 8 clocks |
+| Cooldown | 16 clock cycles |
+| Self-check before recovery | Fault clear and risk no higher than WARNING for 8 consecutive cycles |
+| Recovery | At most 3 automatic attempts after reset; PWM ramps by 10 counts per clock |
 
-The fault output is not delayed until the invalid counter reaches 16: the
-`!sensor_valid` condition alone asserts it. The counter is diagnostic state and
-also participates in the combined fault condition.
+These are digital models and counters, not calibrated physical-unit or safety limits. The BIST checks the sensor-valid input during startup; it does not test the internal datapath, PWM hardware, or motor.
 
-### Voltage and power
+## Fault codes
 
-`voltage_power_monitor` uses a permitted voltage range of 1000 through 4000
-counts, inclusive:
-
-```text
-voltage_fault = voltage < 1000 OR voltage > 4000
-power_estimate = voltage × filtered_current
-```
-
-`power_estimate` is a 24-bit product of the two digital counts. It is not
-calibrated watts.
-
-### Thermal estimate and temperature
-
-`thermal_estimator` has a default thermal fault limit of 3000 counts:
-
-```text
-thermal_fault = (thermal_state >= 3000) OR (temperature_input >= 3000)
-```
-
-Its internal estimate adds 8 counts per clock when current is greater than
-1200, otherwise subtracts 2 counts per clock down to zero. It intends to
-saturate at 4095.
-
-Each clock, the candidate thermal state changes by the current-based
-heating/cooling rule, then is raised to the measured temperature if that
-measurement is higher. The measurement is therefore incorporated as a floor
-for that update; after the measured temperature falls, the state cools
-according to the current-based rule. The independent direct temperature
-threshold check remains active. This is an RTL count-based model, not a
-calibrated physical thermal model.
-
-### Persistence and stall checks
-
-| Check | Default condition |
-|---|---|
-| Persistent high risk | `critical_current OR danger_current` remains high for 8 clock cycles |
-| Stall current | Filtered current is at least 2400 |
-| Stall PWM | PWM duty is at most 300 |
-| Stall trend | `delta_i <= 0` |
-| Stall duration | All three stall conditions hold for 8 clock cycles |
-
-Both detectors clear their counter and fault output when their condition stops.
-The persistence detector counts danger/critical comparator outputs, not the
-predicted risk level.
-
-### Fault codes and priority
-
-If multiple fault inputs are active at once, `fault_classifier` reports the
-first matching condition in this priority order:
+When multiple fault conditions are active, the first matching condition wins:
 
 | Priority | Code | Fault |
 |---:|---:|---|
 | 1 | 1 | Sensor fault |
-| 2 | 2 | Emergency current |
+| 2 | 2 | Fast trip, inverse-time overload, or emergency current |
 | 3 | 3 | Thermal fault |
 | 4 | 4 | Stall |
 | 5 | 5 | Voltage fault |
 | 6 | 6 | Persistent overload |
 | — | 0 | No fault |
 
-The reported code identifies the highest-priority active condition; it does
-not list every simultaneous fault.
+The code reports the highest-priority active fault, not every simultaneous fault. The deglitcher's `deglitch_fault` is currently not wired into this classifier.
 
-### Adaptive PWM and PWM output
+## PWM and recovery behavior
 
-The adaptive duty defaults are:
+Default risk-based duty targets are SAFE 800, WARNING 650, DANGER 450, CRITICAL 200, and FAULT 0. Duty is measured in counts of a 1024-count PWM period, so 800 is approximately 78.1%. Outside recovery, the duty target is selected directly; during recovery it increases by 10 counts per clock. Any classified fault or disabled FSM state forces `pwm_out` low.
 
-| Risk | Duty count |
-|---|---:|
-| SAFE | 800 |
-| WARNING | 650 |
-| DANGER | 450 |
-| CRITICAL | 200 |
-| FAULT or unrecognized risk | 0 |
+After a trip, the controller disables the PWM command, waits through cooldown, then performs a clear-condition qualification. If the fault is absent, risk is SAFE or WARNING for 8 consecutive clocks, and an attempt remains, it enters recovery. A continuing fault, excessive risk, or exhausted attempts results in lockout. Lockout remains until reset. This is RTL control behavior, not a physical safety guarantee.
 
-If the motor is not enabled, the duty is forced to 0. In recovery mode, the
-controller increases duty by 10 counts per clock until it reaches the
-risk-based target. It asserts `recovery_complete` when the actual duty has
-reached that target. Outside recovery, it selects the target duty immediately.
+## Simulation and validation
 
-The PWM counter wraps every 1024 clock cycles. The output is high while
-`counter < duty`; therefore duty is expressed in counter counts (for example,
-800 is approximately 78.1% of the 1024-count period).
-
-## Protection state machine
-
-State values are also exposed on the top-level `fsm_state` output.
-
-| State value | State | Implemented behavior |
-|---:|---|---|
-| 0 | STARTUP | Advances to BIST |
-| 1 | BIST | Waits for BIST completion; BIST failure sends the FSM to lockout |
-| 2 | NORMAL | Fault shuts down; otherwise follows warning/danger/critical risk |
-| 3 | WARNING | Motor remains enabled; returns toward normal as risk falls |
-| 4 | PWM_REDUCE | Motor remains enabled at reduced risk-based PWM |
-| 5 | MONITOR | Motor remains enabled while checking for recovery or worsening risk |
-| 6 | CRITICAL | Advances to fault-off |
-| 7 | FAULT_OFF | Motor disabled, then advances to cooldown |
-| 8 | COOLDOWN | Waits for 16 clock cycles, unless BIST failure causes lockout |
-| 9 | SELF_CHECK | Fault, BIST failure, or risk above WARNING causes lockout; otherwise requires 8 consecutive clear cycles and an available recovery attempt |
-| 10 | RECOVERY | Motor enabled; stays here until the recovery PWM reaches its target |
-| 11 | LOCKOUT | Motor disabled; remains locked until reset |
-
-Risk transitions in the normal operating states:
-
-- NORMAL: fault -> FAULT_OFF; WARNING -> WARNING; DANGER -> PWM_REDUCE;
-  CRITICAL -> CRITICAL; FAULT risk -> FAULT_OFF.
-- WARNING: fault -> FAULT_OFF; SAFE -> NORMAL; DANGER -> PWM_REDUCE;
-  CRITICAL or FAULT risk -> CRITICAL.
-- PWM_REDUCE: fault -> FAULT_OFF; SAFE -> MONITOR; WARNING -> WARNING;
-  CRITICAL or FAULT risk -> CRITICAL.
-- MONITOR: fault -> FAULT_OFF; SAFE -> RECOVERY; CRITICAL or FAULT risk ->
-  CRITICAL. WARNING and DANGER leave it in MONITOR.
-- RECOVERY: fault or CRITICAL/FAULT risk -> FAULT_OFF; SAFE/WARNING returns
-  to NORMAL only after `recovery_complete` is asserted by the adaptive PWM.
-
-This keeps the FSM in RECOVERY for the whole upward PWM ramp. With SAFE risk,
-the default target is 800, and a ramp from 0 takes 80 clock cycles at 10 counts
-per cycle. With WARNING risk, the target is 650 and the ramp takes 65 cycles.
-If risk worsens to CRITICAL or FAULT during recovery, the FSM goes back to
-FAULT_OFF instead of continuing the ramp.
-
-The default cooldown is 16 clock cycles. Its duration in seconds depends on
-the clock frequency. LOCKOUT is sticky and requires reset to leave it.
-
-### FSM state diagram
-
-```mermaid
-stateDiagram-v2
-    [*] --> STARTUP
-    STARTUP --> BIST
-
-    BIST --> LOCKOUT: bist_fail
-    BIST --> NORMAL: bist_done
-
-    NORMAL --> FAULT_OFF: fault
-    NORMAL --> WARNING: risk == WARNING
-    NORMAL --> PWM_REDUCE: risk == DANGER
-    NORMAL --> CRITICAL: risk == CRITICAL
-    NORMAL --> FAULT_OFF: risk == FAULT
-
-    WARNING --> FAULT_OFF: fault
-    WARNING --> NORMAL: risk == SAFE
-    WARNING --> PWM_REDUCE: risk == DANGER
-    WARNING --> CRITICAL: risk == CRITICAL or FAULT
-
-    PWM_REDUCE --> FAULT_OFF: fault
-    PWM_REDUCE --> MONITOR: risk == SAFE
-    PWM_REDUCE --> WARNING: risk == WARNING
-    PWM_REDUCE --> CRITICAL: risk == CRITICAL or FAULT
-
-    MONITOR --> FAULT_OFF: fault
-    MONITOR --> RECOVERY: risk == SAFE
-    MONITOR --> CRITICAL: risk >= CRITICAL
-
-    CRITICAL --> FAULT_OFF
-
-    FAULT_OFF --> COOLDOWN
-
-    COOLDOWN --> LOCKOUT: bist_fail
-    COOLDOWN --> SELF_CHECK: cooldown_done
-
-    SELF_CHECK --> LOCKOUT: fault or bist_fail or risk > WARNING
-    SELF_CHECK --> RECOVERY: clear for 8 cycles and recovery_attempt_count < 3
-    SELF_CHECK --> LOCKOUT: recovery_attempt_count >= 3
-
-    RECOVERY --> FAULT_OFF: fault or risk >= CRITICAL
-    RECOVERY --> NORMAL: risk <= WARNING and recovery_complete
-
-    LOCKOUT --> LOCKOUT
-```
-
-### Simplified FSM overview
-
-```mermaid
-flowchart TD
-    START([STARTUP]) --> BIST[BIST]
-    BIST --> NORMAL[NORMAL]
-    NORMAL -->|fault| FAULT_OFF[FAULT_OFF]
-    NORMAL -->|warning| WARNING[WARNING]
-    NORMAL -->|danger| PWM_REDUCE[PWM_REDUCE]
-    NORMAL -->|critical| CRITICAL[CRITICAL]
-    WARNING -->|safe| NORMAL
-    WARNING -->|danger| PWM_REDUCE
-    PWM_REDUCE -->|safe| MONITOR[MONITOR]
-    MONITOR -->|safe| RECOVERY[RECOVERY]
-    FAULT_OFF --> COOLDOWN[COOLDOWN]
-    COOLDOWN --> SELF_CHECK[SELF_CHECK]
-    SELF_CHECK -->|clear + attempts left| RECOVERY
-    SELF_CHECK -->|unsafe / exhausted| LOCKOUT[LOCKOUT]
-    RECOVERY -->|fault or critical| FAULT_OFF
-    RECOVERY -->|complete| NORMAL
-    LOCKOUT --> LOCKOUT
-```
-
-### Recovery timing view
-
-```mermaid
-sequenceDiagram
-    participant Sensor
-    participant FSM
-    participant PWM
-
-    Sensor->>FSM: fault detected
-    FSM->>PWM: disable output
-    FSM->>FSM: FAULT_OFF
-    FSM->>FSM: COOLDOWN (16 cycles)
-    FSM->>FSM: SELF_CHECK (8 clear cycles)
-
-    alt fault cleared and attempts remain
-        FSM->>PWM: start recovery ramp
-        loop duty increase every clock
-            PWM-->>FSM: duty step +10
-        end
-        PWM-->>FSM: recovery_complete
-        FSM->>FSM: NORMAL
-    else fault persists or lockout condition
-        FSM->>PWM: keep output disabled
-        FSM->>FSM: LOCKOUT
-    end
-```
-
-### FSM state encoding table
-
-| State value | State name | RTL constant |
-|---:|---|---|
-| 0 | STARTUP | `ST_STARTUP` |
-| 1 | BIST | `ST_BIST` |
-| 2 | NORMAL | `ST_NORMAL` |
-| 3 | WARNING | `ST_WARNING` |
-| 4 | PWM_REDUCE | `ST_PWM_REDUCE` |
-| 5 | MONITOR | `ST_MONITOR` |
-| 6 | CRITICAL | `ST_CRITICAL` |
-| 7 | FAULT_OFF | `ST_FAULT_OFF` |
-| 8 | COOLDOWN | `ST_COOLDOWN` |
-| 9 | SELF_CHECK | `ST_SELF_CHECK` |
-| 10 | RECOVERY | `ST_RECOVERY` |
-| 11 | LOCKOUT | `ST_LOCKOUT` |
-
-### Built-in self-test (BIST)
-
-The BIST controller defaults to 4 cycles. It checks `sensor_valid` during its
-active window (after the first count), records a failure if it sees an invalid
-sample, and marks itself done after the configured count. The FSM prioritizes
-BIST failure over completion.
-
-Despite its name, this BIST only checks the sensor-valid input. It does not
-test the internal datapath, memory, PWM output, or physical motor hardware.
-
-### Fault logging
-
-`fault_logger` records:
-
-- `last_fault_code`: updated while a fault is active.
-- `peak_current`: highest filtered current since reset.
-- `fault_duration`: consecutive clock cycles with any fault, saturating at
-  65535 and clearing when no fault is active.
-
-The peak is not cleared when an individual fault ends; it is cleared by reset.
-
-## Simulation
-
-The Vivado project is configured to use `tb_motor_protection_top` as the
-simulation top. In the Vivado Tcl Console, refresh the simulation source order
-and run:
+The Vivado project uses `tb_motor_protection_top` as the simulation top. In the Vivado Tcl Console:
 
 ```tcl
 update_compile_order -fileset sim_1
@@ -495,93 +117,46 @@ launch_simulation -simset sim_1 -mode behavioral
 run all
 ```
 
-If a simulation is already open, close it first with `close_sim`. A successful
-run ends with `PASS: all motor protection testbench scenarios completed`.
+If a simulation is already open, close it first with `close_sim`. A successful run prints:
 
-The self-checking testbench currently checks:
+```text
+PASS: all motor protection testbench scenarios completed
+```
 
-1. Successful startup/BIST and safe PWM duty of 800.
-2. A stepped current input reaching the emergency-current threshold and fault
-   logging code 2; it also checks that PWM goes low immediately on fault and
-   stays low while overcurrent remains active, reaching lockout.
-3. Top-level recovery after overcurrent clears, including the clear
-   qualification interval, cooldown, intermediate PWM duty, and return to
-   NORMAL at safe duty 800.
-4. Three recovery attempts are allowed after reset; a subsequent cleared trip
-   reaches LOCKOUT with PWM disabled.
-5. Invalid sensor input causing sensor fault code 1, shutdown, and lockout.
-6. Invalid sensor input during startup causing BIST failure and lockout.
+The current testbench exercises startup/BIST, safe PWM duty, filtered emergency overcurrent and fault logging, recovery and attempt limits, invalid sensor shutdown, and startup BIST failure. It does **not** currently test the newly documented deglitcher, fast-trip qualification, inverse-time accumulation/decay, voltage limits, thermal thresholds, persistence and stall timing, PWM waveform period, or simultaneous-fault priority. Add dedicated tests before relying on those behaviors.
 
-It prints `PASS: all motor protection testbench scenarios completed` when those
-checks pass. The recovery and attempt-limit tests use the complete top-level
-sensor-to-fault path. The bench still does not test voltage limits, thermal
-thresholds, persistence timing, stall timing, PWM waveform period, or
-simultaneous-fault priority.
+Project-team-reported results: behavioral simulation passed the documented scenarios; prior synthesis completed with 0 errors and 0 critical warnings, and implementation/routing reported 343 LUTs and 285 flip-flops on `xc7a100tcsg324-1`. These resource figures are from the source version before the thermal-state fix and have not been confirmed by a subsequent synthesis run. Timing closure has **not** been demonstrated: the reported WNS/TNS were NA because no user timing constraints were supplied. Board bring-up reports do not establish protection behavior with real sensor inputs or physical-motor validation.
 
-The user-reported Vivado behavioral simulation completed all six scenarios
-and printed `PASS: all motor protection testbench scenarios completed`,
-including the clear-qualification and recovery-attempt-limit tests. This is
-RTL simulation evidence, not evidence for the untested behaviors above.
+## Relationship to the reference paper
 
-The user-reported Vivado RTL synthesis completed with **0 errors** and **0
-critical warnings**. The subsequent implementation report says placement and
-routing completed successfully, with **343 LUTs (0.54%)** and **285 flip-flops
-(0.22%)** used on the selected `xc7a100tcsg324-1` device. The routed timing
-summary reports WNS/TNS as **NA** because the design has **no user-specified
-timing constraints**; timing closure has therefore not been demonstrated.
-Vivado also warns that power estimation is inaccurate without a defined clock.
+The reference is A. Aib, D. E. Khodja, S. Chakroune, and H. Rahali, “Fuzzy current analysis-based fault diagnostic of induction motor using hardware co-simulation with field programmable gate array,” *Electrical Engineering & Electromechanics*, 2023, no. 6, pp. 3–9, [doi:10.20998/2074-272X.2023.6.01](https://doi.org/10.20998/2074-272X.2023.6.01). It studies fuzzy-logic diagnosis of phase unbalance and missing phase using stator-current RMS, validated with hardware co-simulation on a Xilinx ML402/Virtex-4 platform and MATLAB/Simulink System Generator.
 
-The user subsequently reran the behavioral simulation, which printed
-`PASS: all motor protection testbench scenarios completed`; this run includes
-the thermal-state check that verifies a 500-count temperature reaches
-`thermal_state`. Synthesis has not yet been rerun after the thermal-state fix,
-so the resource and warning details below are from the prior source version.
-
-That earlier synthesis reported 16 warnings. Some report unused temporary registers
-(`prediction_temp` and `abs_jump`) that synthesis optimized away; the unused
-`delta_i` input on `risk_classifier` is redundant because the classifier uses
-`predicted_current`. The earlier synthesis report also identified the
-thermal-state update gap, which has since been fixed and simulation-tested.
-Synthesis, placement, and routing completed for the FPGA target, but the
-unconstrained timing report does not establish timing closure. The reported
-board bring-up does not establish protection behavior with real sensor inputs
-or operation with a physical motor.
+This project does **not** reproduce that diagnostic method: it has one digital current channel, fixed thresholds and risk logic, and no fuzzy inference or phase-unbalance/missing-phase diagnosis. Its fast trip, inverse-time overload, PWM control, and recovery are distinct supervisory protection features. Matching the paper would require multi-phase current acquisition, RMS processing, fuzzy inference, and validation against the reference setup.
 
 ## File guide
 
 | File | Purpose |
 |---|---|
-| `motor_protection_top.v` | Connects all blocks and defines project inputs/outputs |
+| `motor_protection_top.v` | Top-level wiring and external inputs/outputs |
 | `adc_interface.v` | Registers incoming digital sensor values; not an ADC driver |
-| `current_filter.v` | Four-sample moving average of current |
+| `current_deglitcher` | Current jump filtering and deglitch indication |
+| `fast_trip_detector` | Low-latency raw-current threshold and qualification |
+| `inverse_time_protection` | Digital inverse-time overload accumulator |
+| `current_filter.v` | Four-sample current moving average |
 | `current_comparator.v` | Current warning, danger, critical, and emergency flags |
-| `trend_detector.v` | Difference between consecutive filtered-current samples |
-| `risk_predictor.v` | Projects current three samples ahead |
-| `risk_classifier.v` | Selects risk level from current and predicted current |
-| `voltage_power_monitor.v` | Voltage-range fault and raw-count power product |
-| `thermal_estimator.v` | Current-based thermal state and temperature fault |
-| `persistence_detector.v` | Detects sustained danger/critical current |
-| `stall_detector.v` | Detects high current with low PWM and non-rising current |
-| `sensor_diagnostics.v` | Invalid, stuck-at, and sudden-jump checks |
-| `bist_controller.v` | Startup sensor-valid check |
-| `fault_classifier.v` | Chooses fault output and prioritized code |
-| `protection_fsm.v` | Startup, operating, shutdown, cooldown, recovery, and lockout states |
-| `adaptive_pwm.v` | Chooses risk-based duty and recovery increments |
-| `pwm_generator.v` | Converts duty count to the PWM waveform |
-| `fault_logger.v` | Stores last fault code, peak current, and fault duration |
-| `tb_motor_protection_top.v` | Self-checking behavioral simulation scenarios |
+| `trend_detector.v`, `risk_predictor.v`, `risk_classifier.v` | Current trend and risk estimation |
+| `voltage_power_monitor.v`, `thermal_estimator.v` | Voltage/power and thermal checks |
+| `persistence_detector.v`, `stall_detector.v`, `sensor_diagnostics.v` | Additional fault checks |
+| `fault_classifier.v`, `protection_fsm.v` | Fault priority and protection/recovery states |
+| `adaptive_pwm.v`, `pwm_generator.v` | Risk-based PWM duty and PWM waveform |
+| `fault_logger.v` | Last fault code, peak current, and fault duration |
+| `tb_motor_protection_top.v` | Self-checking behavioral testbench |
 | `Project_simulation_1.xpr` | Vivado project configuration |
 
+## Before motor-connected validation
 
-## Important engineering gaps before motor-connected validation
-
-1. Convert ADC counts to physical units and set thresholds from the actual
-   motor, sensors, and operating conditions.
-2. Extend tests to cover voltage limits, thermal thresholds, persistence and
-   stall timing, PWM waveform timing, fault-code priority, and boundary cases,
-   including simultaneous faults.
-3. Add the Nexys 4 DDR pin, clock, and I/O constraints used for the board
-   bring-up to the project, and verify them against the board setup.
-4. Validate protection behavior with real sensor inputs on a safe bench setup
-   before connecting a motor. This prototype is not a substitute for
-   independent hardware overcurrent protection or a certified safety system.
+1. Calibrate sensor inputs and convert digital counts to physical units; set thresholds for the actual motor and sensors.
+2. Add tests for fast-trip, deglitch, inverse-time accumulation and decay, voltage and thermal limits, persistence/stall timing, PWM timing, fault priority, and boundary cases.
+3. Connect or otherwise handle `deglitch_fault` if it is intended to trigger a reported fault.
+4. Add and verify the Nexys 4 DDR pin, clock, and I/O constraints used for board bring-up.
+5. Validate with real sensor signals on a safe bench setup before connecting a motor. This prototype is not a substitute for independent hardware overcurrent protection or a certified safety system.
