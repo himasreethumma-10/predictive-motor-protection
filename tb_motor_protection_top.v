@@ -141,6 +141,50 @@ module tb_motor_protection_top;
         end
     endtask
 
+    task wait_for_fast_trip;
+        input integer max_cycles;
+        integer cycles;
+        begin
+            cycles = 0;
+            while ((dut.fast_trip_fault !== 1'b1) &&
+                   (cycles < max_cycles)) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+
+            if (dut.fast_trip_fault !== 1'b1) begin
+                $fatal(
+                    1,
+                    "Timed out waiting for fast trip: raw=%0d sampled=%0d filtered=%0d fast_trip=%b",
+                    current_raw, dut.current_sample, filtered_current,
+                    dut.fast_trip_fault
+                );
+            end
+        end
+    endtask
+
+    task wait_for_inverse_time_fault;
+        input integer max_cycles;
+        integer cycles;
+        begin
+            cycles = 0;
+            while ((dut.inverse_time_fault !== 1'b1) &&
+                   (cycles < max_cycles)) begin
+                @(negedge clk);
+                cycles = cycles + 1;
+            end
+
+            if (dut.inverse_time_fault !== 1'b1) begin
+                $fatal(
+                    1,
+                    "Timed out waiting for inverse-time fault: raw=%0d deglitched=%0d filtered=%0d inverse_time=%b",
+                    current_raw, dut.current_deglitched, filtered_current,
+                    dut.inverse_time_fault
+                );
+            end
+        end
+    endtask
+
     task set_current_and_wait;
         input [11:0] value;
         input integer cycles;
@@ -231,8 +275,61 @@ module tb_motor_protection_top;
             );
         end
 
-        // Test 2: emergency trip, persistent-fault lockout, and fault logging.
-        $display("Test 2: rising current triggers an overcurrent fault");
+        // Test 2: the raw-current fast trip acts before the average filter settles.
+        $display("Test 2: fast-trip protection bypasses the moving-average delay");
+        apply_reset();
+        wait_for_state(ST_NORMAL, 20);
+        current_raw = 12'd4000;
+        wait_for_fast_trip(8);
+        #1;
+
+        if (dut.emergency_current_fault !== 1'b0 ||
+            filtered_current >= 12'd3500) begin
+            $fatal(
+                1,
+                "Fast-trip test did not precede the filtered-current path: filtered=%0d emergency=%b",
+                filtered_current, dut.emergency_current_fault
+            );
+        end
+
+        if (fault !== 1'b1 || fault_code !== 4'd2 || pwm_out !== 1'b0) begin
+            $fatal(
+                1,
+                "Fast trip was not classified/shut down correctly: fault=%b code=%0d pwm_out=%b",
+                fault, fault_code, pwm_out
+            );
+        end
+
+        // Test 3: deglitching holds a large input jump briefly, then the
+        // inverse-time overload path trips on sustained elevated current.
+        $display("Test 3: deglitching and inverse-time overload protection");
+        apply_reset();
+        wait_for_state(ST_NORMAL, 20);
+        current_raw = 12'd2000;
+        repeat (2) @(negedge clk);
+
+        if (dut.current_deglitched !== 12'd100) begin
+            $fatal(
+                1,
+                "Expected deglitcher to reject the initial jump for one sample, got %0d",
+                dut.current_deglitched
+            );
+        end
+
+        wait_for_inverse_time_fault(60);
+
+        if (fault !== 1'b1 || fault_code !== 4'd2) begin
+            $fatal(
+                1,
+                "Inverse-time overload was not classified correctly: inverse_time=%b fault=%b code=%0d",
+                dut.inverse_time_fault, fault, fault_code
+            );
+        end
+
+        // Test 4: emergency trip, persistent-fault lockout, and fault logging.
+        $display("Test 4: rising current triggers an overcurrent fault");
+        apply_reset();
+        wait_for_state(ST_NORMAL, 20);
         trigger_overcurrent();
 
         if (filtered_current < 12'd3600) begin
@@ -272,8 +369,8 @@ module tb_motor_protection_top;
             $fatal(1, "Expected fault logger code 2, got %0d", last_fault_code);
         end
 
-        // Test 3: a cleared fault qualifies before PWM recovery begins.
-        $display("Test 3: cleared overcurrent completes cooldown and recovery ramp");
+        // Test 5: a cleared fault qualifies before PWM recovery begins.
+        $display("Test 5: cleared overcurrent completes cooldown and recovery ramp");
         current_raw = 12'd100;
         sensor_valid_raw = 1'b1;
         apply_reset();
@@ -295,8 +392,8 @@ module tb_motor_protection_top;
 
         recover_to_normal();
 
-        // Test 4: enforce the configured three-attempt recovery limit.
-        $display("Test 4: repeated trips are limited to three recovery attempts");
+        // Test 6: enforce the configured three-attempt recovery limit.
+        $display("Test 6: repeated trips are limited to three recovery attempts");
         repeat (2) begin
             trigger_overcurrent();
             recover_to_normal();
@@ -310,8 +407,8 @@ module tb_motor_protection_top;
             $fatal(1, "Expected PWM shutdown after recovery-attempt limit");
         end
 
-        // Test 5: sensor loss during operation shuts down and locks out.
-        $display("Test 5: invalid sensor causes fault, shutdown, and lockout");
+        // Test 7: sensor loss during operation shuts down and locks out.
+        $display("Test 7: invalid sensor causes fault, shutdown, and lockout");
         current_raw = 12'd100;
         sensor_valid_raw = 1'b1;
         apply_reset();
@@ -338,8 +435,8 @@ module tb_motor_protection_top;
             $fatal(1, "Expected fault logger code 1, got %0d", last_fault_code);
         end
 
-        // Test 6: invalid sensor during startup fails BIST.
-        $display("Test 6: failed startup BIST enters lockout");
+        // Test 8: invalid sensor during startup fails BIST.
+        $display("Test 8: failed startup BIST enters lockout");
         current_raw = 12'd100;
         sensor_valid_raw = 1'b0;
         apply_reset();
